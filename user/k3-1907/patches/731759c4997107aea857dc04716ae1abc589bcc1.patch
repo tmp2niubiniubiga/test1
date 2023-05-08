@@ -1,0 +1,36 @@
+From 731759c4997107aea857dc04716ae1abc589bcc1 Mon Sep 17 00:00:00 2001
+From: Lienol <23146169+Lienol@users.noreply.github.com>
+Date: Mon, 6 Dec 2021 01:38:54 +0800
+Subject: [PATCH] build: use openssl
+
+---
+ include/target.mk             | 2 +-
+ package/libs/uclient/Makefile | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/include/target.mk b/include/target.mk
+index 2db01893891..b5634124d86 100644
+--- a/include/target.mk
++++ b/include/target.mk
+@@ -10,7 +10,7 @@ __target_inc=1
+ DEVICE_TYPE?=router
+ 
+ # Default packages - the really basic set
+-DEFAULT_PACKAGES:=base-files busybox ca-bundle ca-certificates dropbear fstools libc libgcc logd libustream-wolfssl mtd netifd opkg uci uclient-fetch urandom-seed urngd luci luci-compat wget-ssl curl \
++DEFAULT_PACKAGES:=base-files busybox ca-bundle ca-certificates dropbear fstools libc libgcc logd libustream-openssl mtd netifd opkg uci uclient-fetch urandom-seed urngd luci luci-compat wget-ssl curl \
+ default-settings \
+ luci-app-ddns ddns-scripts-cloudflare ddns-scripts_aliyun ddns-scripts_dnspod \
+ luci-app-upnp luci-app-wol luci-app-vlmcsd luci-app-ramfree \
+diff --git a/package/libs/uclient/Makefile b/package/libs/uclient/Makefile
+index f7d15b4d0ce..398a27bb98b 100644
+--- a/package/libs/uclient/Makefile
++++ b/package/libs/uclient/Makefile
+@@ -34,7 +34,7 @@ define Package/uclient-fetch
+   TITLE:=Tiny wget replacement using libuclient
+   ALTERNATIVES:=200:/usr/bin/wget:/bin/uclient-fetch
+   PROVIDES:=wget
+-  DEPENDS:=+libuclient +ca-bundle +ca-certificates +libustream-wolfssl
++  DEPENDS:=+libuclient
+ endef
+ 
+ define Package/libuclient/install
