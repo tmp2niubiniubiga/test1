@@ -1,0 +1,239 @@
+name: Openwrt-AutoBuild
+
+on:
+  #  release:
+  #    types: [published]
+  push:
+    branches:
+      - main
+    paths:
+      - "start"
+  watch:
+    types: [started]
+  schedule:
+    - cron: "0 20 * * 0-6"
+
+env:
+  RUN_VALIDATION: true
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+
+    name: Build ${{matrix.target}}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - acrh17-1907
+          - k3-1907
+          - x64-1907
+          - x64-master
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set Date
+        run: |
+          date=$(date +%Y-%m-%d)
+          echo "DATE=$date" >> $GITHUB_ENV
+
+      - name: Initialization environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /swapfile /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install wget curl build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib antlr3 gperf
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+
+      - name: Free Space
+        run: |
+          df -h
+
+      - name: Load Settings.ini
+        run: |
+          source "${GITHUB_WORKSPACE}/user/${{matrix.target}}/settings.ini"
+          echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
+          echo "REPO_BRANCH=${REPO_BRANCH}" >> $GITHUB_ENV
+          echo "UPLOAD_PACKAGES_DIR=${UPLOAD_PACKAGES_DIR}" >> $GITHUB_ENV
+          echo "UPLOAD_TARGETS_DIR=${UPLOAD_TARGETS_DIR}" >> $GITHUB_ENV
+          echo "UPLOAD_FIRMWARE=${UPLOAD_FIRMWARE}" >> $GITHUB_ENV
+          echo "UPLOAD_EFI_FIRMWARE=${UPLOAD_EFI_FIRMWARE}" >> $GITHUB_ENV
+          echo "UPLOAD_TO_ARTIFACTS=${UPLOAD_TO_ARTIFACTS}" >> $GITHUB_ENV
+          echo "UPLOAD_TO_REALEASE=${UPLOAD_TO_REALEASE}" >> $GITHUB_ENV
+          echo "UPLOAD_TO_COWTRANSFER=${UPLOAD_TO_COWTRANSFER}" >> $GITHUB_ENV
+          echo "WECHAT_NOTIFICATION=${WECHAT_NOTIFICATION}" >> $GITHUB_ENV
+
+      - name: Clone source code
+        run: |
+          git clone ${{ env.REPO_URL }} -b ${{ env.REPO_BRANCH }} --single-branch openwrt
+
+      - name: Add feeds
+        run: |
+          cd openwrt
+
+      - name: Load custom configuration
+        run: |
+          echo "Apply custom.sh"
+          if [ -f "user/common/custom.sh" ]; then
+          (
+            cd openwrt
+            /bin/bash "../user/common/custom.sh"
+          )
+          fi       
+          if [ -f "user/${{matrix.target}}/custom.sh" ]; then
+          (
+            cd openwrt
+            /bin/bash "../user/${{matrix.target}}/custom.sh"
+          )
+          fi
+
+      - name: Update feeds
+        run: cd openwrt && ./scripts/feeds update -a
+
+      - name: Install feeds
+        run: cd openwrt && ./scripts/feeds install -a
+
+      - name: Delete feeds
+        run: cd openwrt && rm -rf ./package/feeds/packages/xray-core ./package/feeds/packages/brook ./package/feeds/packages/v2ray
+
+      - name: Git Clone feeds
+        run: |
+          cd openwrt/package
+          git clone -b packages --single-branch https://github.com/xiaorouji/openwrt-passwall.git passwall_packages
+          git clone -b main --single-branch https://github.com/xiaorouji/openwrt-passwall2.git passwall2_luci
+          git clone -b luci-smartdns-new-version --single-branch https://github.com/xiaorouji/openwrt-passwall.git passwall_luci
+          git clone -b master --single-branch https://github.com/tty228/luci-app-serverchan.git
+          git clone -b master --single-branch https://github.com/destan19/OpenAppFilter.git
+
+      - name: Download latest config
+        run: |
+          cd openwrt
+          curl -skL https://raw.githubusercontent.com/tmp2niubiniubiga/test1/main/user/${{matrix.target}}/config.diff -o .config
+          
+      - name: Apply Patches
+        run: |
+          echo "Apply patches"
+          if [ -n "$(ls -A "user/common/patches" 2>/dev/null)" ]; then
+          (
+            find "user/common/patches" -type f -name '*.patch' -print0 | sort -z | xargs -I % -t -0 -n 1 sh -c "cat '%'  | patch -d 'openwrt' -p1 --forward"
+          )
+          fi
+          if [ -n "$(ls -A "user/${{matrix.target}}/patches" 2>/dev/null)" ]; then
+          (
+            find "user/${{matrix.target}}/patches" -type f -name '*.patch' -print0 | sort -z | xargs -I % -t -0 -n 1 sh -c "cat '%'  | patch -d 'openwrt' -p1 --forward"
+          )
+          fi
+
+      - name: Download package
+        id: package
+        run: |
+          cd openwrt
+          make defconfig
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile the firmware
+        id: compile
+        run: |
+          cd openwrt
+          make -j3 || make -j1 V=s
+          echo "status=success" >>$GITHUB_OUTPUT
+
+      - name: Pack packages_dir
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd openwrt/bin/packages/
+          tar -cvf  ${{matrix.target}}_packages.tar ./
+          mv *.tar ..
+
+      - name: Pack targets_dir
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd openwrt/bin/targets/
+          tar -cvf  ${{matrix.target}}_targets.tar ./
+          mv *.tar ..
+
+      - name: Assemble Firmware
+        run: |
+          if [ -s "user/${{matrix.target}}/firmware" ]; then
+          (
+            firmware=$(cat user/${{matrix.target}}/firmware)
+            rm -rf ./Firmware/
+            mkdir -p ./Firmware/
+            find openwrt/bin/targets/ -name "${firmware}" | xargs -i mv -f {} ./Firmware/
+          )
+          fi
+
+      - name: Upload Packages to release
+        if: env.UPLOAD_PACKAGES_DIR == 'true' && env.UPLOAD_TO_REALEASE == 'true' && !cancelled() &&  steps.compile.outputs.status == 'success'
+        uses: svenstaro/upload-release-action@v1-release
+        with:
+          repo_token: ${{ secrets.SUPER_TOKEN }}
+          file: openwrt/bin/${{matrix.target}}_packages.tar
+          asset_name: ${{matrix.target}}_packages.tar
+          tag: ${{ env.DATE }}
+          overwrite: true
+          file_glob: true
+
+      - name: Upload Targets to release
+        if: env.UPLOAD_TARGETS_DIR == 'true' && env.UPLOAD_TO_REALEASE == 'true' && !cancelled() &&  steps.compile.outputs.status == 'success'
+        uses: svenstaro/upload-release-action@v1-release
+        with:
+          repo_token: ${{ secrets.SUPER_TOKEN }}
+          file: openwrt/bin/${{matrix.target}}_targets.tar
+          asset_name: ${{matrix.target}}_targets.tar
+          tag: ${{ env.DATE }}
+          overwrite: true
+          file_glob: true
+
+      - name: Upload Packages to CowTransfer
+        if: env.UPLOAD_PACKAGES_DIR == 'true' && env.UPLOAD_TO_COWTRANSFER == 'true' && !cancelled() &&  steps.compile.outputs.status == 'success'
+        run: |
+          curl -fsSL git.io/file-transfer | sh
+           ./transfer cow --block 2621440 -s -p 64 --no-progress openwrt/bin/${{matrix.target}}_packages.tar
+
+      - name: Upload Targetss to CowTransfer
+        if: env.UPLOAD_TARGETS_DIR == 'true' && env.UPLOAD_TO_COWTRANSFER == 'true' && !cancelled() &&　 steps.compile.outputs.status == 'success'
+        run: |
+          curl -fsSL git.io/file-transfer | sh
+           ./transfer cow --block 2621440 -s -p 64 --no-progress openwrt/bin/${{matrix.target}}_targets.tar
+
+      - name: Upload packages directory
+        if: env.UPLOAD_PACKAGES_DIR == 'true' && env.UPLOAD_TO_ARTIFACTS == 'true' && !cancelled()　&& steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@main
+        with:
+          name: OpenWrt_packages_${{matrix.target}}
+          path: openwrt/bin/packages
+
+      - name: Upload targets directory
+        if: env.UPLOAD_TARGETS_DIR == 'true' && env.UPLOAD_TO_ARTIFACTS == 'true' && !cancelled() && steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@main
+        with:
+          name: OpenWrt_targets_${{matrix.target}}
+          path: openwrt/bin/targets
+
+      - name: Upload Firmware
+        if: env.UPLOAD_FIRMWARE == 'true' && env.UPLOAD_TO_ARTIFACTS == 'true' && !cancelled() && steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@main
+        with:
+          name: ${{matrix.target}}_Firmware
+          path: |
+            ./Firmware/*squashfs*
+            !./Firmware/*efi*
+            !./Firmware/*rootfs*
+
+      - name: Upload EFI Firmware
+        if: env.UPLOAD_EFI_FIRMWARE == 'true' && env.UPLOAD_TO_ARTIFACTS == 'true' && !cancelled() && steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@main
+        with:
+          name: ${{matrix.target}}_EFI_Firmware
+          path: ./Firmware/*efi*
+
+      - name: WeChat notification
+        if: env.WECHAT_NOTIFICATION == 'true' && !cancelled() && steps.compile.outputs.status == 'success'
+        run: curl https://sc.ftqq.com/${{ secrets.SCKEY }}.send?text=${{matrix.target}}编译完成
